@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SAED Zone-Axis Indexer</title>
-<meta name="description" content="Free browser tool for indexing selected-area electron diffraction (SAED) patterns: upload an image (JPG, PNG, TIFF, Velox EMD), auto-detect or click the spots, and identify the zone axis by calibration-free ratio + angle matching. FCC, BCC, diamond, HCP, and custom lattices.">
+<meta name="description" content="Free browser tool for indexing selected-area electron diffraction (SAED) patterns: upload an image (JPG, PNG, TIFF, Velox EMD), auto-detect or click the spots, identify the zone axis, and classify extra reflections (superlattice, precipitates, twins, stacking-fault streaks). FCC, BCC, diamond, HCP, and custom lattices.">
 <meta property="og:title" content="SAED Zone-Axis Indexer">
-<meta property="og:description" content="Index TEM diffraction patterns in your browser — auto-detect spots or click 000 and two spots, get the zone axis. Runs entirely client-side; images never leave your computer.">
+<meta property="og:description" content="Index TEM diffraction patterns in your browser — auto-detect spots, get the zone axis, and classify superlattice / precipitate / twin / fault reflections. Runs entirely client-side.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2308080f'/%3E%3Cg fill='%23ffffff'%3E%3Ccircle cx='32' cy='32' r='6'/%3E%3Ccircle cx='12' cy='32' r='4'/%3E%3Ccircle cx='52' cy='32' r='4'/%3E%3Ccircle cx='32' cy='12' r='4'/%3E%3Ccircle cx='32' cy='52' r='4'/%3E%3C/g%3E%3Cg fill='%23ffc845'%3E%3Ccircle cx='22' cy='22' r='3'/%3E%3Ccircle cx='42' cy='22' r='3'/%3E%3Ccircle cx='22' cy='42' r='3'/%3E%3Ccircle cx='42' cy='42' r='3'/%3E%3C/g%3E%3C/svg%3E">
 
 <style>
@@ -171,9 +171,11 @@
     <div class="card">
       <h2>4 &middot; Analyze</h2>
       <button id="btnGo" class="primary" style="width:100%">Identify zone axis</button>
+      <button id="btnSuspects" style="width:100%;margin-top:7px">Check extra spots &mdash; superlattice &middot; precipitates &middot; twins &middot; faults</button>
       <div id="meas" style="margin-top:8px"></div>
       <div id="warns"></div>
       <div id="results" style="margin-top:6px"></div>
+      <div id="suspects" style="margin-top:6px"></div>
       <div class="tip" id="annotTip" style="display:none"></div>
       <div class="legend" id="legend" style="display:none">
         <span class="lg-coral">g&#8321; (spot 1)</span><span class="lg-cyan">g&#8322; (spot 2)</span>
@@ -8030,6 +8032,7 @@ const S = {
   detected: null,                   // auto-detected peaks [{x,y,I}]
   analyzed: false,                  // an analysis has been run for the current points
   suppressed: new Set(),            // "m,n" keys of approved-mode labels the user removed
+  classified: null,                 // extra-spot classification results
   style: { font: "Arial", sizePct: 100, color: "#ffe9b0", outlineColor: "#000000", marker: "dot", markerColor: "#ffc845", bold: true, outline: true, stamp: true },
 };
 const TEMPLATES = {
@@ -8191,6 +8194,7 @@ function analyze() {
   S.selected = S.results.length ? 0 : -1;
   S.analyzed = true;
   S.suppressed.clear();
+  S.classified = null; document.getElementById("suspects").innerHTML = "";
   S.approved = false; S.hover = null;
   document.getElementById("btnExport").disabled = true;
   renderMeasurements({ R1, R2, ratio, phi });
@@ -8283,6 +8287,25 @@ function draw() {
   const tl = worldToScreen({ x: 0, y: 0 });
   ctx.drawImage(S.img, tl.x, tl.y, S.iw * S.scale, S.ih * S.scale);
 
+  // classified extra spots (colored rings)
+  if (S.classified && !S.approved) {
+    for (const u of S.classified) {
+      const q = worldToScreen(u);
+      const col = CLS_META[u.cls].c;
+      ctx.beginPath(); ctx.arc(q.x, q.y, 11, 0, 7);
+      ctx.setLineDash([5, 3]);                       // dashed = classification ring (vs solid preview net)
+      ctx.strokeStyle = col; ctx.lineWidth = 2.4; ctx.stroke();
+      ctx.setLineDash([]);
+      if (u.cls === "streak") {
+        const a = u.angleDeg * Math.PI / 180, L = 15;
+        ctx.beginPath();
+        ctx.moveTo(q.x - L * Math.cos(a), q.y - L * Math.sin(a));
+        ctx.lineTo(q.x + L * Math.cos(a), q.y + L * Math.sin(a));
+        ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.stroke();
+      }
+      if (u.dd) { ctx.beginPath(); ctx.arc(q.x, q.y, 15, 0, 7); ctx.setLineDash([3, 3]); ctx.strokeStyle = "#4ad9ff"; ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]); }
+    }
+  }
   // auto-detected peaks (faint)
   if (S.detected && !S.approved) {
     for (const p of S.detected) {
@@ -8632,7 +8655,7 @@ function detectSpots() {
   for (const p of raw) {
     let ok = true;
     for (const q of kept) if (Math.hypot(p.x - q.x, p.y - q.y) < minDist) { ok = false; break; }
-    if (ok) { kept.push(p); if (kept.length >= 80) break; }
+    if (ok) { kept.push(p); if (kept.length >= 220) break; }
   }
   for (const p of kept) { const r = snapCentroid({ x: p.x, y: p.y }); p.x = r.x; p.y = r.y; }
   return kept;
@@ -8654,7 +8677,9 @@ function autoDetect() {
     if (sc > bestS) { bestS = sc; center = p; }
   }
   // candidate basis vectors, scored by how many peaks land on integer nodes of the net
-  const vecs = peaks.filter(p => p !== center)
+  const Is = peaks.map(p => p.I).sort((a, b) => a - b);
+  const medI = Is[Math.floor(Is.length / 2)];
+  const vecs = peaks.filter(p => p !== center && p.I >= medI)   // basis from the BRIGHT half — keeps a weak superlattice net from hijacking the basis
     .map(p => ({ p, dx: p.x - center.x, dy: p.y - center.y, r: Math.hypot(p.x - center.x, p.y - center.y) }))
     .filter(v => v.r > 6).sort((a, b) => a.r - b.r);
   if (vecs.length < 2) { hint.innerHTML = `<span style="color:var(--coral)">Not enough spots around the central beam — place points manually.</span>`; return; }
@@ -8682,6 +8707,134 @@ function autoDetect() {
   hint.innerHTML = `Auto-detected <b>${peaks.length}</b> spots (basis fits ${best.hits}/${best.total}). ` +
     (S.results.length ? `Best zone: <b>${zoneHtml(S.results[0].zone)}</b>. ` : "") +
     `<b>Drag any circle</b> to refine a position — it re-indexes when you release. If 000 is wrong (beamstop!), drag the crosshair.`;
+}
+
+/* ================= extra-spot classification (the five suspects) ================= */
+const CLS_META = {
+  super:  { c: "#ffc845", name: "Superlattice / ordering" },
+  twin:   { c: "#b08fe8", name: "Twin (&#8531;-order position)" },
+  streak: { c: "#ff8c4a", name: "Streaked &mdash; thin plates / stacking faults" },
+  ppt:    { c: "#ff4a7d", name: "Second phase / precipitate" },
+};
+function elongationAt(p) {   // intensity 2nd-moment ellipse around a point -> elongation + axis angle
+  if (!S.imgData) return { elong: 1, angleDeg: 0 };
+  const r = Math.max(8, Math.min(20, Math.round(Math.min(S.iw, S.ih) / 55)));
+  const x0 = Math.round(p.x), y0 = Math.round(p.y), d = S.imgData.data;
+  const dark = document.getElementById("chkDark").checked;
+  const vals = [];
+  let lo = 255;
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    const x = x0 + dx, y = y0 + dy;
+    if (x < 0 || y < 0 || x >= S.iw || y >= S.ih || dx * dx + dy * dy > r * r) continue;
+    let v = 0.299 * d[(y * S.iw + x) * 4] + 0.587 * d[(y * S.iw + x) * 4 + 1] + 0.114 * d[(y * S.iw + x) * 4 + 2];
+    if (dark) v = 255 - v;
+    vals.push([dx, dy, v]);
+    if (v < lo) lo = v;
+  }
+  let hi = 0;
+  for (const [, , v] of vals) if (v > hi) hi = v;
+  const thr = lo + 0.3 * (hi - lo);              // ignore background — only the feature's own pixels vote
+  let sw = 0, sx = 0, sy = 0;
+  for (const [dx, dy, v] of vals) { const w = Math.max(0, v - thr) ** 2; sw += w; sx += w * dx; sy += w * dy; }
+  if (sw <= 0) return { elong: 1, angleDeg: 0 };
+  const mx = sx / sw, my = sy / sw;
+  let cxx = 0, cyy = 0, cxy = 0;
+  for (const [dx, dy, v] of vals) {
+    const w = Math.max(0, v - thr) ** 2;
+    cxx += w * (dx - mx) ** 2; cyy += w * (dy - my) ** 2; cxy += w * (dx - mx) * (dy - my);
+  }
+  cxx /= sw; cyy /= sw; cxy /= sw;
+  const tr = cxx + cyy, det2 = cxx * cyy - cxy * cxy;
+  const l1 = tr / 2 + Math.sqrt(Math.max(0, tr * tr / 4 - det2));
+  const l2 = tr / 2 - Math.sqrt(Math.max(0, tr * tr / 4 - det2));
+  const angleDeg = 0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180 / Math.PI;
+  return { elong: l2 > 0.01 ? Math.sqrt(l1 / l2) : 1, angleDeg };
+}
+function classifyExtras() {
+  if (!S.center || S.spots.length < 2) { document.getElementById("suspects").innerHTML = `<div class="warn">Index the matrix first: place 000 + two spots (or Auto-detect), then Identify zone axis.</div>`; return; }
+  if (!S.results.length || S.selected < 0) { document.getElementById("suspects").innerHTML = `<div class="warn">Run <b>Identify zone axis</b> first — classification is relative to the indexed matrix net.</div>`; return; }
+  const R = S.results[S.selected], st = document.getElementById("structure").value;
+  const v1 = sub(S.spots[0], S.center), v2 = sub(S.spots[1], S.center);
+  const det = v1.x * v2.y - v1.y * v2.x;
+  let pts = S.detected ? S.detected.map(p => ({ x: p.x, y: p.y, I: p.I || 0 })) : [];
+  for (let i = 2; i < S.spots.length; i++) pts.push({ x: S.spots[i].x, y: S.spots[i].y, I: 0, manual: true });
+  if (!pts.length) { document.getElementById("suspects").innerHTML = `<div class="warn">No extra spots to test — run <b>Auto-detect spots</b> (or click additional spots) first.</div>`; return; }
+  const R1px = Math.hypot(v1.x, v1.y);
+  const scale = R.lenA / R1px;                        // Å⁻¹ per pixel, self-calibrated from the indexed matrix
+  const un = [];
+  let nMatrix = 0;
+  for (const p of pts) {
+    const wx = p.x - S.center.x, wy = p.y - S.center.y;
+    const r = Math.hypot(wx, wy);
+    if (r < 5) continue;
+    const m = (wx * v2.y - wy * v2.x) / det, n = (v1.x * wy - v1.y * wx) / det;
+    if (Math.abs(m - Math.round(m)) < 0.15 && Math.abs(n - Math.round(n)) < 0.15) { nMatrix++; continue; }
+    un.push({ x: p.x, y: p.y, m, n, r, d: 1 / (r * scale) });
+  }
+  for (const u of un) {
+    Object.assign(u, elongationAt(u));
+    const halfOK = Math.abs(2 * u.m - Math.round(2 * u.m)) < 0.22 && Math.abs(2 * u.n - Math.round(2 * u.n)) < 0.22;
+    const thirdOK = Math.abs(3 * u.m - Math.round(3 * u.m)) < 0.25 && Math.abs(3 * u.n - Math.round(3 * u.n)) < 0.25;
+    if (u.elong > 2.2) {
+      u.cls = "streak";
+      u.label = `elongated &times;${u.elong.toFixed(1)} &mdash; relrod &perp; a thin plate or stacking-fault plane`;
+    } else if (halfOK) {
+      const mh = Math.round(2 * u.m) / 2, nh = Math.round(2 * u.n) / 2;
+      const hh = [0, 1, 2].map(j => mh * R.A[j] + nh * R.B[j]);
+      if (hh.every(x => Math.abs(x - Math.round(x)) < 0.25)) {
+        const hi = hh.map(Math.round);
+        u.cls = "super";
+        u.label = allowed(hi[0], hi[1], hi[2], st)
+          ? `${hklHtml(hi)} &mdash; allowed index at half-order?? re-check the basis`
+          : `${hklHtml(hi)} &mdash; forbidden in the matrix &rarr; chemical ordering (L1&#8322;, B2&hellip;)`;
+      } else {
+        u.cls = "super";
+        u.label = "&frac12;-order, non-integer hkl &mdash; long-period ordering / &omega;-type";
+      }
+    } else if (thirdOK) {
+      u.cls = "twin";
+      u.label = "&#8531;{422}-type position &mdash; classic FCC twin signature (check the {111} mirror)";
+    } else {
+      u.cls = "ppt";
+      u.label = `d &asymp; ${u.d.toFixed(3)} &Aring; &mdash; matches no matrix plane`;
+    }
+  }
+  // double-diffraction replica test: a "precipitate" spot repeating around matrix nodes
+  for (const u of un) {
+    if (u.cls !== "ppt") continue;
+    for (const v of un) {
+      if (v === u || v.cls === "streak") continue;
+      const dm = u.m - v.m, dn = u.n - v.n;
+      if (Math.abs(dm - Math.round(dm)) < 0.12 && Math.abs(dn - Math.round(dn)) < 0.12 && (Math.round(dm) !== 0 || Math.round(dn) !== 0)) {
+        u.dd = true;
+        u.label += " &middot; repeats around matrix spots &rarr; possible double diffraction (tilt test!)";
+        break;
+      }
+    }
+  }
+  S.classified = un;
+  renderSuspects(nMatrix, pts.length);
+  draw();
+}
+function renderSuspects(nMatrix, nTotal) {
+  const el = document.getElementById("suspects");
+  const un = S.classified || [];
+  if (!un.length) {
+    el.innerHTML = `<div class="tip" style="color:var(--green)">All ${nTotal} detected spots are explained by the matrix net (${nMatrix} matrix + center). No extra reflections found.</div>`;
+    return;
+  }
+  const groups = {};
+  for (const u of un) (groups[u.cls] = groups[u.cls] || []).push(u);
+  let html = `<div class="tip" style="margin-bottom:4px">${nMatrix} spots &rarr; matrix net; <b style="color:#fff">${un.length} unexplained</b>, classified:</div>`;
+  for (const [cls, list] of Object.entries(groups)) {
+    const meta = CLS_META[cls];
+    html += `<div style="margin:7px 0 3px"><span style="color:${meta.c};font-weight:bold">&#9679; ${meta.name} &mdash; ${list.length}</span></div>`;
+    const shown = list.slice(0, 5);
+    for (const u of shown) html += `<div class="err" style="margin-left:14px">(m,n) = (${u.m.toFixed(2)}, ${u.n.toFixed(2)}) &middot; ${u.label}</div>`;
+    if (list.length > 5) html += `<div class="err" style="margin-left:14px">&hellip;and ${list.length - 5} more</div>`;
+  }
+  html += `<div class="tip" style="margin-top:7px">Rings on the image are color-coded. <b>Verify before believing</b>: dark-field on the suspect spot, tilt to a second zone axis, and remember the &frac12;/&#8531;-order tests assume the matrix basis you indexed is the fundamental net. Right-click any bad detection to remove it and re-check.</div>`;
+  el.innerHTML = html;
 }
 
 /* ================= toolbar ================= */
@@ -8796,6 +8949,7 @@ function loadEmd(buf, name) {
   grayToImage(vals, W2, H2, name);
 }
 document.getElementById("btnDetect").addEventListener("click", autoDetect);
+document.getElementById("btnSuspects").addEventListener("click", classifyExtras);
 document.getElementById("btnFit").addEventListener("click", fitView);
 document.getElementById("btnCenter").addEventListener("click", () => { S.mode = "center"; hint.innerHTML = "Click the transmitted beam <b>000</b>."; });
 document.getElementById("btnUndo").addEventListener("click", () => { S.spots.pop(); S.results = []; S.selected = -1; renderPoints(); document.getElementById("results").innerHTML = ""; draw(); });
@@ -8850,7 +9004,7 @@ function exportLabeled() {
   a.click();
 }
 document.getElementById("btnClear").addEventListener("click", () => {
-  S.center = null; S.spots = []; S.results = []; S.selected = -1; S.mode = "auto"; S.detected = null; S.analyzed = false;
+  S.center = null; S.spots = []; S.results = []; S.selected = -1; S.mode = "auto"; S.detected = null; S.analyzed = false; S.classified = null; document.getElementById("suspects").innerHTML = "";
   S.approved = false; S.hover = null; document.getElementById("btnExport").disabled = true;
   renderPoints(); document.getElementById("results").innerHTML = ""; document.getElementById("meas").innerHTML = ""; document.getElementById("warns").innerHTML = "";
   document.getElementById("legend").style.display = "none"; document.getElementById("overlayTip").style.display = "none";
@@ -8863,7 +9017,7 @@ function loadImage(url, name) {
   img.onerror = () => loadFail(name || "image", "your browser couldn't decode this file. Supported: JPG, PNG, BMP, GIF, WebP, TIFF, Velox EMD.");
   img.onload = () => {
     S.img = img; S.iw = img.naturalWidth; S.ih = img.naturalHeight;
-    S.center = null; S.spots = []; S.results = []; S.selected = -1; S.detected = null; S.analyzed = false;
+    S.center = null; S.spots = []; S.results = []; S.selected = -1; S.detected = null; S.analyzed = false; S.classified = null; document.getElementById("suspects").innerHTML = "";
     S.approved = false; S.hover = null; document.getElementById("btnExport").disabled = true;
     const oc = document.createElement("canvas");
     oc.width = S.iw; oc.height = S.ih;
@@ -8991,7 +9145,7 @@ document.getElementById("tplFile").addEventListener("change", e => {
 });
 
 /* ================= boot ================= */
-window.__test = { S, analyze, draw, exportLabeled, autoDetect, addWorldPoint: (x, y) => { const keep = document.getElementById("chkSnap").checked; if (!S.center) S.center = { x, y }; else S.spots.push({ x, y }); renderPoints(); draw(); } };
+window.__test = { S, analyze, draw, exportLabeled, autoDetect, classifyExtras, addWorldPoint: (x, y) => { const keep = document.getElementById("chkSnap").checked; if (!S.center) S.center = { x, y }; else S.spots.push({ x, y }); renderPoints(); draw(); } };
 resize();
 renderPoints();
 loadTpls();
