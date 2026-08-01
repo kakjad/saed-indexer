@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SAED Zone-Axis Indexer</title>
-<meta name="description" content="Free browser tool for indexing selected-area electron diffraction (SAED) patterns: upload an image (JPG, PNG, TIFF, Velox EMD), click the transmitted beam and two spots, and identify the zone axis by calibration-free ratio + angle matching. FCC, BCC, diamond, HCP, and custom lattices.">
+<meta name="description" content="Free browser tool for indexing selected-area electron diffraction (SAED) patterns: upload an image (JPG, PNG, TIFF, Velox EMD), auto-detect or click the spots, and identify the zone axis by calibration-free ratio + angle matching. FCC, BCC, diamond, HCP, and custom lattices.">
 <meta property="og:title" content="SAED Zone-Axis Indexer">
-<meta property="og:description" content="Index TEM diffraction patterns in your browser — click 000 and two spots, get the zone axis. Runs entirely client-side; images never leave your computer.">
+<meta property="og:description" content="Index TEM diffraction patterns in your browser — auto-detect spots or click 000 and two spots, get the zone axis. Runs entirely client-side; images never leave your computer.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2308080f'/%3E%3Cg fill='%23ffffff'%3E%3Ccircle cx='32' cy='32' r='6'/%3E%3Ccircle cx='12' cy='32' r='4'/%3E%3Ccircle cx='52' cy='32' r='4'/%3E%3Ccircle cx='32' cy='12' r='4'/%3E%3Ccircle cx='32' cy='52' r='4'/%3E%3C/g%3E%3Cg fill='%23ffc845'%3E%3Ccircle cx='22' cy='22' r='3'/%3E%3Ccircle cx='42' cy='22' r='3'/%3E%3Ccircle cx='22' cy='42' r='3'/%3E%3Ccircle cx='42' cy='42' r='3'/%3E%3C/g%3E%3C/svg%3E">
 
 <style>
@@ -94,6 +94,7 @@
       <button id="btnUpload" class="primary">Upload pattern</button>
       <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.bmp,.gif,.webp,.tif,.tiff,.emd,.h5,.hdf5,image/*" style="display:none">
       <button id="btnDemo">Demo pattern</button>
+      <button id="btnDetect">Auto-detect spots</button>
       <button id="btnFit" class="small">Fit view</button>
       <label class="chk"><input type="checkbox" id="chkSnap" checked> snap to spot centroid</label>
       <label class="chk"><input type="checkbox" id="chkDark"> dark spots on light bkgd</label>
@@ -8026,6 +8027,8 @@ const S = {
   mode: "auto",                     // "auto": first click center, then spots; "center": next click re-picks center
   imgData: null,
   approved: false, hover: null,     // hover: {w:{x,y}, hkl:[h,k,l]}
+  detected: null,                   // auto-detected peaks [{x,y,I}]
+  analyzed: false,                  // an analysis has been run for the current points
   style: { font: "Arial", sizePct: 100, color: "#ffe9b0", outlineColor: "#000000", marker: "dot", markerColor: "#ffc845", bold: true, outline: true, stamp: true },
 };
 const TEMPLATES = {
@@ -8185,6 +8188,7 @@ function analyze() {
   }
   S.results = [...best.values()].sort((a, b) => a.score - b.score).slice(0, 8);
   S.selected = S.results.length ? 0 : -1;
+  S.analyzed = true;
   S.approved = false; S.hover = null;
   document.getElementById("btnExport").disabled = true;
   renderMeasurements({ R1, R2, ratio, phi });
@@ -8276,6 +8280,14 @@ function draw() {
   const tl = worldToScreen({ x: 0, y: 0 });
   ctx.drawImage(S.img, tl.x, tl.y, S.iw * S.scale, S.ih * S.scale);
 
+  // auto-detected peaks (faint)
+  if (S.detected && !S.approved) {
+    for (const p of S.detected) {
+      const q = worldToScreen(p);
+      ctx.beginPath(); ctx.arc(q.x, q.y, 5, 0, 7);
+      ctx.strokeStyle = "rgba(160,170,190,0.35)"; ctx.lineWidth = 1.2; ctx.stroke();
+    }
+  }
   // overlay predicted net
   const net = currentNet();
   if (net) {
@@ -8407,15 +8419,37 @@ function drawMarker(w, col, label, isCenter) {
 }
 
 /* ================= interactions ================= */
-let dragging = false, moved = false, last = null;
-cv.addEventListener("mousedown", e => { dragging = true; moved = false; last = { x: e.offsetX, y: e.offsetY }; });
+let dragging = false, moved = false, last = null, dragPt = null;
+function hitPoint(sp) {   // which placed marker is under the cursor?
+  const R = 13;
+  if (S.center) { const p = worldToScreen(S.center); if (Math.hypot(p.x - sp.x, p.y - sp.y) < R) return { type: "center" }; }
+  for (let i = 0; i < S.spots.length; i++) {
+    const p = worldToScreen(S.spots[i]);
+    if (Math.hypot(p.x - sp.x, p.y - sp.y) < R) return { type: "spot", idx: i };
+  }
+  return null;
+}
+cv.addEventListener("mousedown", e => {
+  dragging = true; moved = false; last = { x: e.offsetX, y: e.offsetY };
+  dragPt = hitPoint({ x: e.offsetX, y: e.offsetY });
+});
 cv.addEventListener("mousemove", e => {
   if (dragging) {
     const dx = e.offsetX - last.x, dy = e.offsetY - last.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    if (dragPt) {           // dragging a marker, not the view
+      if (moved) {
+        const w = screenToWorld({ x: e.offsetX, y: e.offsetY });
+        const pt = dragPt.type === "center" ? S.center : S.spots[dragPt.idx];
+        pt.x = w.x; pt.y = w.y;
+        draw();
+      }
+      return;
+    }
     if (moved) { S.ox -= dx / S.scale; S.oy -= dy / S.scale; last = { x: e.offsetX, y: e.offsetY }; draw(); }
     return;
   }
+  cv.style.cursor = hitPoint({ x: e.offsetX, y: e.offsetY }) ? "grab" : "crosshair";
   // hover hit-test against the predicted net → g vector readout
   if (!document.getElementById("chkG").checked) { if (S.hover) { S.hover = null; draw(); } return; }
   const net = currentNet();
@@ -8434,8 +8468,21 @@ cv.addEventListener("mousemove", e => {
 });
 cv.addEventListener("mouseleave", () => { if (S.hover) { S.hover = null; draw(); } });
 window.addEventListener("mouseup", e => {
-  if (dragging && !moved && e.target === cv) addPoint({ x: e.offsetX, y: e.offsetY });
-  dragging = false;
+  if (dragging && dragPt) {
+    if (moved) {                                   // marker drag finished
+      if (document.getElementById("chkSnap").checked) {
+        const pt = dragPt.type === "center" ? S.center : S.spots[dragPt.idx];
+        const s = snapCentroid(pt); pt.x = s.x; pt.y = s.y;
+      }
+      S.approved = false; document.getElementById("btnExport").disabled = true;
+      renderPoints();
+      if (S.center && S.spots.length >= 2 && S.analyzed) analyze();   // live re-index
+      else draw();
+    }
+  } else if (dragging && !moved && e.target === cv) {
+    addPoint({ x: e.offsetX, y: e.offsetY });
+  }
+  dragging = false; dragPt = null;
 });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
@@ -8497,6 +8544,96 @@ function renderPoints() {
     S.spots.splice(+d.dataset.i, 1); S.results = []; S.selected = -1;
     renderPoints(); document.getElementById("results").innerHTML = ""; draw();
   }));
+}
+
+/* ================= automatic spot detection ================= */
+function detectSpots() {
+  const W = S.iw, H = S.ih, d = S.imgData.data;
+  const dark = document.getElementById("chkDark").checked;
+  const g = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const v = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    g[i] = dark ? 255 - v : v;
+  }
+  // robust threshold from a subsample: median + 3.5 sigma (sigma ~ p84 - median)
+  const step = Math.max(1, Math.floor(Math.sqrt(W * H / 40000)));
+  const sample = [];
+  for (let y = 0; y < H; y += step) for (let x = 0; x < W; x += step) sample.push(g[y * W + x]);
+  sample.sort((a, b) => a - b);
+  const med = sample[Math.floor(sample.length * 0.5)];
+  const sigma = Math.max(2, sample[Math.floor(sample.length * 0.84)] - med);
+  const T = Math.min(250, med + Math.max(10, 3.5 * sigma));
+  // 5x5 local maxima above threshold
+  const raw = [];
+  for (let y = 2; y < H - 2; y++) {
+    for (let x = 2; x < W - 2; x++) {
+      const v = g[y * W + x];
+      if (v < T) continue;
+      let isMax = true;
+      for (let dy = -2; dy <= 2 && isMax; dy++) for (let dx = -2; dx <= 2; dx++) {
+        if (!dx && !dy) continue;
+        if (g[(y + dy) * W + x + dx] > v) { isMax = false; break; }
+      }
+      if (isMax) raw.push({ x, y, I: v });
+    }
+  }
+  raw.sort((a, b) => b.I - a.I);
+  // non-maximum suppression, then centroid refinement
+  const minDist = Math.max(8, Math.min(W, H) / 45);
+  const kept = [];
+  for (const p of raw) {
+    let ok = true;
+    for (const q of kept) if (Math.hypot(p.x - q.x, p.y - q.y) < minDist) { ok = false; break; }
+    if (ok) { kept.push(p); if (kept.length >= 80) break; }
+  }
+  for (const p of kept) { const r = snapCentroid({ x: p.x, y: p.y }); p.x = r.x; p.y = r.y; }
+  return kept;
+}
+function autoDetect() {
+  if (!S.img) { hint.innerHTML = "Load an image first, then auto-detect."; return; }
+  if (!S.imgData) { loadFail("image", "pixel data unavailable for detection"); return; }
+  const peaks = detectSpots();
+  if (!peaks || peaks.length < 3) {
+    hint.innerHTML = `<span style="color:var(--coral)">Only ${peaks ? peaks.length : 0} spot(s) detected — the pattern may be too faint. Place points manually (or toggle 'dark spots on light bkgd').</span>`;
+    return;
+  }
+  S.detected = peaks;
+  // 000 = brightest peak, mildly preferring proximity to the image center (beamstop-free case)
+  const dmax = Math.hypot(S.iw, S.ih) / 2;
+  let center = peaks[0], bestS = -1;
+  for (const p of peaks) {
+    const sc = p.I * (1 - 0.25 * Math.hypot(p.x - S.iw / 2, p.y - S.ih / 2) / dmax);
+    if (sc > bestS) { bestS = sc; center = p; }
+  }
+  // candidate basis vectors, scored by how many peaks land on integer nodes of the net
+  const vecs = peaks.filter(p => p !== center)
+    .map(p => ({ p, dx: p.x - center.x, dy: p.y - center.y, r: Math.hypot(p.x - center.x, p.y - center.y) }))
+    .filter(v => v.r > 6).sort((a, b) => a.r - b.r);
+  if (vecs.length < 2) { hint.innerHTML = `<span style="color:var(--coral)">Not enough spots around the central beam — place points manually.</span>`; return; }
+  let best = null;
+  const K = Math.min(7, vecs.length);
+  for (let i = 0; i < K; i++) for (let j = i + 1; j < K; j++) {
+    const a = vecs[i], b = vecs[j];
+    const cr = a.dx * b.dy - a.dy * b.dx;
+    if (Math.abs(cr) / (a.r * b.r) < 0.30) continue;
+    let hits = 0;
+    for (const v of vecs) {
+      const m = (v.dx * b.dy - v.dy * b.dx) / cr, n = (a.dx * v.dy - a.dy * v.dx) / cr;
+      if (Math.abs(m - Math.round(m)) < 0.12 && Math.abs(n - Math.round(n)) < 0.12) hits++;
+    }
+    const score = hits - 0.004 * (a.r + b.r);
+    if (!best || score > best.score) best = { a, b, score, hits, total: vecs.length };
+  }
+  if (!best) { hint.innerHTML = `<span style="color:var(--coral)">Couldn't find a non-collinear spot basis — place points manually.</span>`; return; }
+  S.center = { x: center.x, y: center.y };
+  S.spots = [{ x: best.a.p.x, y: best.a.p.y }, { x: best.b.p.x, y: best.b.p.y }];
+  S.mode = "auto"; S.approved = false; S.hover = null;
+  document.getElementById("btnExport").disabled = true;
+  renderPoints();
+  analyze();
+  hint.innerHTML = `Auto-detected <b>${peaks.length}</b> spots (basis fits ${best.hits}/${best.total}). ` +
+    (S.results.length ? `Best zone: <b>${zoneHtml(S.results[0].zone)}</b>. ` : "") +
+    `<b>Drag any circle</b> to refine a position — it re-indexes when you release. If 000 is wrong (beamstop!), drag the crosshair.`;
 }
 
 /* ================= toolbar ================= */
@@ -8610,6 +8747,7 @@ function loadEmd(buf, name) {
   hint.innerHTML = `EMD dataset <b>${escapeHtml(pick.path)}</b> (${s.join("&times;")}) — frame 1 shown.`;
   grayToImage(vals, W2, H2, name);
 }
+document.getElementById("btnDetect").addEventListener("click", autoDetect);
 document.getElementById("btnFit").addEventListener("click", fitView);
 document.getElementById("btnCenter").addEventListener("click", () => { S.mode = "center"; hint.innerHTML = "Click the transmitted beam <b>000</b>."; });
 document.getElementById("btnUndo").addEventListener("click", () => { S.spots.pop(); S.results = []; S.selected = -1; renderPoints(); document.getElementById("results").innerHTML = ""; draw(); });
@@ -8664,7 +8802,7 @@ function exportLabeled() {
   a.click();
 }
 document.getElementById("btnClear").addEventListener("click", () => {
-  S.center = null; S.spots = []; S.results = []; S.selected = -1; S.mode = "auto";
+  S.center = null; S.spots = []; S.results = []; S.selected = -1; S.mode = "auto"; S.detected = null; S.analyzed = false;
   S.approved = false; S.hover = null; document.getElementById("btnExport").disabled = true;
   renderPoints(); document.getElementById("results").innerHTML = ""; document.getElementById("meas").innerHTML = ""; document.getElementById("warns").innerHTML = "";
   document.getElementById("legend").style.display = "none"; document.getElementById("overlayTip").style.display = "none";
@@ -8677,7 +8815,7 @@ function loadImage(url, name) {
   img.onerror = () => loadFail(name || "image", "your browser couldn't decode this file. Supported: JPG, PNG, BMP, GIF, WebP, TIFF, Velox EMD.");
   img.onload = () => {
     S.img = img; S.iw = img.naturalWidth; S.ih = img.naturalHeight;
-    S.center = null; S.spots = []; S.results = []; S.selected = -1;
+    S.center = null; S.spots = []; S.results = []; S.selected = -1; S.detected = null; S.analyzed = false;
     S.approved = false; S.hover = null; document.getElementById("btnExport").disabled = true;
     const oc = document.createElement("canvas");
     oc.width = S.iw; oc.height = S.ih;
@@ -8805,7 +8943,7 @@ document.getElementById("tplFile").addEventListener("change", e => {
 });
 
 /* ================= boot ================= */
-window.__test = { S, analyze, draw, exportLabeled, addWorldPoint: (x, y) => { const keep = document.getElementById("chkSnap").checked; if (!S.center) S.center = { x, y }; else S.spots.push({ x, y }); renderPoints(); draw(); } };
+window.__test = { S, analyze, draw, exportLabeled, autoDetect, addWorldPoint: (x, y) => { const keep = document.getElementById("chkSnap").checked; if (!S.center) S.center = { x, y }; else S.spots.push({ x, y }); renderPoints(); draw(); } };
 resize();
 renderPoints();
 loadTpls();
