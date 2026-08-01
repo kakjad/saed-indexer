@@ -101,7 +101,7 @@
       <label class="chk"><input type="checkbox" id="chkG" checked> g vectors on hover</label>
       <button id="btnExport" class="small" disabled>Export labeled PNG</button>
       <span style="flex:1"></span>
-      <span style="font-size:11px;color:var(--mut)">scroll = zoom &nbsp;&middot;&nbsp; drag = pan &nbsp;&middot;&nbsp; click = place point</span>
+      <span style="font-size:11px;color:var(--mut)">scroll = zoom &middot; drag = pan &middot; click = place &middot; right-click = remove</span>
     </div>
     <div id="stage"><canvas id="cv"></canvas></div>
     <div id="hintbar">Load an image (or the demo), then click the transmitted beam <b>000</b>.</div>
@@ -8029,6 +8029,7 @@ const S = {
   approved: false, hover: null,     // hover: {w:{x,y}, hkl:[h,k,l]}
   detected: null,                   // auto-detected peaks [{x,y,I}]
   analyzed: false,                  // an analysis has been run for the current points
+  suppressed: new Set(),            // "m,n" keys of approved-mode labels the user removed
   style: { font: "Arial", sizePct: 100, color: "#ffe9b0", outlineColor: "#000000", marker: "dot", markerColor: "#ffc845", bold: true, outline: true, stamp: true },
 };
 const TEMPLATES = {
@@ -8189,6 +8190,7 @@ function analyze() {
   S.results = [...best.values()].sort((a, b) => a.score - b.score).slice(0, 8);
   S.selected = S.results.length ? 0 : -1;
   S.analyzed = true;
+  S.suppressed.clear();
   S.approved = false; S.hover = null;
   document.getElementById("btnExport").disabled = true;
   renderMeasurements({ R1, R2, ratio, phi });
@@ -8242,8 +8244,9 @@ function renderResults(warns) {
   }));
   el.querySelector("#btnApprove").addEventListener("click", () => {
     S.approved = !S.approved;
+    if (S.approved) S.suppressed.clear();     // fresh approval restores all labels
     document.getElementById("btnExport").disabled = !S.approved;
-    if (S.approved) hint.innerHTML = `Indices written for zone axis <b>${zoneHtml(S.results[S.selected].zone)}</b>. Hover any spot for its <b>g vector</b>; use <b>Export labeled PNG</b> to save the annotated pattern.`;
+    if (S.approved) hint.innerHTML = `Indices written for zone axis <b>${zoneHtml(S.results[S.selected].zone)}</b>. Hover any spot for its <b>g vector</b>; <b>right-click</b> a label to remove a spurious one; <b>Export labeled PNG</b> saves the annotated pattern.`;
     renderResults(warns); draw();
   });
   document.getElementById("legend").style.display = "flex";
@@ -8310,7 +8313,7 @@ function draw() {
       // approved: clean labels on every allowed spot in view, in the active style
       const sty = S.style, k = sty.sizePct / 100, fs = 13 * k;
       for (const q of net) {
-        if (!q.ok) continue;
+        if (!q.ok || S.suppressed.has(q.m + "," + q.n)) continue;
         if (q.w.x < 0 || q.w.y < 0 || q.w.x > S.iw || q.w.y > S.ih) continue;
         const p = worldToScreen(q.w);
         drawMarkerShape(ctx, p.x, p.y, 4 * k, sty.marker, sty.markerColor, 1.6 * k);
@@ -8430,8 +8433,53 @@ function hitPoint(sp) {   // which placed marker is under the cursor?
   return null;
 }
 cv.addEventListener("mousedown", e => {
+  if (e.button !== 0) return;                 // left button places/drags; right button removes
   dragging = true; moved = false; last = { x: e.offsetX, y: e.offsetY };
   dragPt = hitPoint({ x: e.offsetX, y: e.offsetY });
+});
+cv.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  const sp = { x: e.offsetX, y: e.offsetY };
+  if (S.approved) {                           // remove a spurious predicted-net label
+    const net = currentNet();
+    if (!net) return;
+    let best = null, bd = 16;
+    for (const q of net) {
+      if (!q.ok || S.suppressed.has(q.m + "," + q.n)) continue;
+      const p = worldToScreen(q.w);
+      const d = Math.hypot(p.x - sp.x, p.y - sp.y);
+      if (d < bd) { bd = d; best = q; }
+    }
+    if (best) {
+      S.suppressed.add(best.m + "," + best.n);
+      hint.innerHTML = `Removed label ${hklHtml(best.hkl)} (${S.suppressed.size} hidden). Un-approve &rarr; approve again to restore all labels.`;
+      draw();
+    }
+    return;
+  }
+  const hp = hitPoint(sp);                    // remove a placed marker
+  if (hp) {
+    if (hp.type === "center") { S.center = null; S.mode = "center"; hint.innerHTML = "000 removed — click the transmitted beam to re-place it."; }
+    else { S.spots.splice(hp.idx, 1); hint.innerHTML = "Spot removed."; }
+    S.results = []; S.selected = -1; S.analyzed = false; S.hover = null;
+    document.getElementById("results").innerHTML = ""; document.getElementById("meas").innerHTML = "";
+    document.getElementById("btnExport").disabled = true;
+    renderPoints(); draw();
+    return;
+  }
+  if (S.detected) {                           // remove a bad auto-detection
+    let bi = -1, bd = 13;
+    S.detected.forEach((p, i) => {
+      const q = worldToScreen(p);
+      const d = Math.hypot(q.x - sp.x, q.y - sp.y);
+      if (d < bd) { bd = d; bi = i; }
+    });
+    if (bi >= 0) {
+      S.detected.splice(bi, 1);
+      hint.innerHTML = `Detection removed (${S.detected.length} left) — it won't be used by the next auto basis pick.`;
+      draw();
+    }
+  }
 });
 cv.addEventListener("mousemove", e => {
   if (dragging) {
@@ -8768,7 +8816,7 @@ function exportLabeled() {
   const net = currentNet() || [];
   g.textAlign = "center"; g.lineJoin = "round";
   for (const q of net) {
-    if (!q.ok) continue;
+    if (!q.ok || S.suppressed.has(q.m + "," + q.n)) continue;
     if (q.w.x < 0 || q.w.y < 0 || q.w.x > S.iw || q.w.y > S.ih) continue;
     const t = hklCanvas(q.hkl);
     drawMarkerShape(g, q.w.x, q.w.y, Math.max(2.5, fs * 0.12), sty.marker, sty.markerColor, Math.max(1.5, fs * 0.07));
