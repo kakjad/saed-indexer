@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAED Zone-Axis Indexer</title>
+<meta name="description" content="Free browser tool for indexing selected-area electron diffraction (SAED) patterns: upload an image, click the transmitted beam and two spots, and identify the zone axis by calibration-free ratio + angle matching. FCC, BCC, diamond, HCP, and custom lattices.">
+<meta property="og:title" content="SAED Zone-Axis Indexer">
+<meta property="og:description" content="Index TEM diffraction patterns in your browser — click 000 and two spots, get the zone axis. Runs entirely client-side; images never leave your computer.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2308080f'/%3E%3Cg fill='%23ffffff'%3E%3Ccircle cx='32' cy='32' r='6'/%3E%3Ccircle cx='12' cy='32' r='4'/%3E%3Ccircle cx='52' cy='32' r='4'/%3E%3Ccircle cx='32' cy='12' r='4'/%3E%3Ccircle cx='32' cy='52' r='4'/%3E%3C/g%3E%3Cg fill='%23ffc845'%3E%3Ccircle cx='22' cy='22' r='3'/%3E%3Ccircle cx='42' cy='22' r='3'/%3E%3Ccircle cx='22' cy='42' r='3'/%3E%3Ccircle cx='42' cy='42' r='3'/%3E%3C/g%3E%3C/svg%3E">
+
+<style>
+  :root {
+    --bg: #08080f; --panel: #13182a; --panel2: #1b2138; --line: #2a3050;
+    --ink: #e8eaf2; --mut: #8a93a8; --gold: #ffc845; --coral: #ff6b4a;
+    --cyan: #4ad9ff; --green: #5fd35f; --purple: #b08fe8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--ink); font-family: Arial, Helvetica, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  header { padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 17px; color: #fff; letter-spacing: 0.5px; }
+  header .sub { font-size: 12px; color: var(--mut); }
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------- left: canvas ---------- */
+  #canvasWrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #toolbar { display: flex; gap: 8px; padding: 8px 12px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--line); background: #0b0f1c; }
+  #toolbar label.chk { font-size: 11.5px; color: var(--mut); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  #stage { flex: 1; position: relative; min-height: 0; background:
+      repeating-conic-gradient(#0c0c16 0% 25%, #090910 0% 50%) 0 0/28px 28px; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  #hintbar { padding: 7px 12px; font-size: 12.5px; background: #0b0f1c; border-top: 1px solid var(--line); color: var(--gold); min-height: 30px; }
+
+  /* ---------- right: controls ---------- */
+  #side { width: 390px; overflow-y: auto; border-left: 1px solid var(--line); background: #0a0e1a; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .card { background: var(--panel); border-radius: 10px; padding: 12px 14px; }
+  .card h2 { font-size: 12px; letter-spacing: 2px; color: var(--gold); text-transform: uppercase; margin-bottom: 9px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px 8px; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 10.5px; color: var(--mut); }
+  select, input[type=number], input[type=text] {
+    background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 7px; font-size: 12.5px; width: 100%;
+  }
+  input:focus, select:focus { outline: 1px solid var(--gold); }
+  input[type=color] { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; height: 28px; padding: 2px; width: 100%; cursor: pointer; }
+  input[type=range] { width: 100%; accent-color: var(--gold); }
+  button {
+    background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 7px; padding: 6px 11px; font-size: 12.5px; cursor: pointer; font-weight: bold;
+  }
+  button:hover { border-color: var(--gold); }
+  button.primary { background: var(--gold); color: #111; border: none; }
+  button.primary:hover { background: #ffd76e; }
+  button.small { padding: 3px 8px; font-size: 11px; }
+  button.active { outline: 2px solid var(--gold); }
+  .rowbtns { display: flex; gap: 7px; flex-wrap: wrap; }
+
+  #ptList { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
+  .pt { display: flex; align-items: center; gap: 8px; background: var(--panel2); border-radius: 6px; padding: 4px 8px; }
+  .pt .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .pt .del { margin-left: auto; color: var(--mut); cursor: pointer; font-weight: bold; padding: 0 4px; }
+  .pt .del:hover { color: var(--coral); }
+
+  #meas { font-size: 12.5px; line-height: 1.55; }
+  #meas b { color: var(--cyan); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { color: var(--gold); text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 11px; }
+  td { padding: 5px 6px; border-bottom: 1px solid #1c2340; }
+  tr.res { cursor: pointer; }
+  tr.res:hover td { background: #1a2038; }
+  tr.selected td { background: #2a2410 !important; }
+  .zone { color: #fff; font-weight: bold; font-size: 13px; }
+  .ov { text-decoration: overline; }
+  .err { color: var(--mut); font-size: 11px; }
+  .warn { color: var(--coral); font-size: 12px; margin-top: 6px; line-height: 1.4; }
+  .tip { color: var(--mut); font-size: 11.5px; line-height: 1.45; margin-top: 7px; }
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--mut); margin-top: 6px; flex-wrap: wrap; }
+  .legend span::before { content: "●"; margin-right: 4px; }
+  .lg-gold::before { color: var(--gold); } .lg-hollow::before { color: #555; }
+  .lg-coral::before { color: var(--coral); } .lg-cyan::before { color: var(--cyan); }
+</style>
+</head>
+<body>
+<header>
+  <h1>SAED ZONE-AXIS INDEXER</h1>
+  <span class="sub">upload a pattern &middot; click 000 and the two shortest spots &middot; get the zone axis (ratio + angle method, calibration-free) &middot; runs 100% in your browser &mdash; images never leave your computer</span>
+</header>
+<main>
+  <div id="canvasWrap">
+    <div id="toolbar">
+      <button id="btnUpload" class="primary">Upload pattern</button>
+      <input type="file" id="fileInput" accept="image/*" style="display:none">
+      <button id="btnDemo">Demo pattern</button>
+      <button id="btnFit" class="small">Fit view</button>
+      <label class="chk"><input type="checkbox" id="chkSnap" checked> snap to spot centroid</label>
+      <label class="chk"><input type="checkbox" id="chkDark"> dark spots on light bkgd</label>
+      <label class="chk"><input type="checkbox" id="chkG" checked> g vectors on hover</label>
+      <button id="btnExport" class="small" disabled>Export labeled PNG</button>
+      <span style="flex:1"></span>
+      <span style="font-size:11px;color:var(--mut)">scroll = zoom &nbsp;&middot;&nbsp; drag = pan &nbsp;&middot;&nbsp; click = place point</span>
+    </div>
+    <div id="stage"><canvas id="cv"></canvas></div>
+    <div id="hintbar">Load an image (or the demo), then click the transmitted beam <b>000</b>.</div>
+  </div>
+
+  <div id="side">
+    <div class="card">
+      <h2>1 &middot; Crystal</h2>
+      <div class="grid2">
+        <div class="field"><label>Preset</label>
+          <select id="preset">
+            <option value="Al">Al (FCC, 4.050 &Aring;)</option>
+            <option value="Ni">Ni (FCC, 3.524 &Aring;)</option>
+            <option value="Cu">Cu (FCC, 3.615 &Aring;)</option>
+            <option value="Au">Au (FCC, 4.078 &Aring;)</option>
+            <option value="aFe">&alpha;-Fe (BCC, 2.866 &Aring;)</option>
+            <option value="W">W (BCC, 3.165 &Aring;)</option>
+            <option value="Si">Si (diamond, 5.431 &Aring;)</option>
+            <option value="Mg">Mg (HCP)</option>
+            <option value="aTi">&alpha;-Ti (HCP)</option>
+            <option value="custom">Custom&hellip;</option>
+          </select>
+        </div>
+        <div class="field"><label>Lattice / extinctions</label>
+          <select id="structure">
+            <option value="FCC">FCC (all even / all odd)</option>
+            <option value="BCC">BCC (h+k+l even)</option>
+            <option value="SC">Simple / primitive</option>
+            <option value="DIA">Diamond cubic</option>
+            <option value="HCP">HCP (2-atom basis)</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid3" style="margin-top:7px">
+        <div class="field"><label>a (&Aring;)</label><input type="number" id="pa" step="0.001" value="4.050"></div>
+        <div class="field"><label>b (&Aring;)</label><input type="number" id="pb" step="0.001" value="4.050"></div>
+        <div class="field"><label>c (&Aring;)</label><input type="number" id="pc" step="0.001" value="4.050"></div>
+        <div class="field"><label>&alpha; (&deg;)</label><input type="number" id="pal" step="0.1" value="90"></div>
+        <div class="field"><label>&beta; (&deg;)</label><input type="number" id="pbe" step="0.1" value="90"></div>
+        <div class="field"><label>&gamma; (&deg;)</label><input type="number" id="pga" step="0.1" value="90"></div>
+      </div>
+      <div class="grid3" style="margin-top:7px">
+        <div class="field"><label>Max index</label><input type="number" id="maxIdx" min="2" max="6" value="3"></div>
+        <div class="field"><label>Ratio tol (%)</label><input type="number" id="tolR" min="1" max="20" value="6"></div>
+        <div class="field"><label>Angle tol (&deg;)</label><input type="number" id="tolA" min="0.5" max="10" step="0.5" value="3"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2 &middot; Calibration <span style="color:var(--mut);text-transform:none;letter-spacing:0">(optional)</span></h2>
+      <div class="field"><label>Camera constant &lambda;L (&Aring;&middot;px) &mdash; enables measured d-spacings</label>
+        <input type="number" id="camConst" step="any" placeholder="leave blank to use ratios only">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3 &middot; Points</h2>
+      <div class="rowbtns">
+        <button id="btnCenter" class="small">Re-pick 000</button>
+        <button id="btnUndo" class="small">Undo spot</button>
+        <button id="btnClear" class="small">Clear all</button>
+      </div>
+      <div id="ptList"></div>
+      <div class="tip">Click the <b>brightest matrix net</b> only: 000, then the two <b>shortest non-collinear</b> spots (they define the basis g&#8321;, g&#8322;). Extra spots are used as consistency checks. Don&rsquo;t click superlattice / precipitate spots.</div>
+    </div>
+
+    <div class="card">
+      <h2>4 &middot; Analyze</h2>
+      <button id="btnGo" class="primary" style="width:100%">Identify zone axis</button>
+      <div id="meas" style="margin-top:8px"></div>
+      <div id="warns"></div>
+      <div id="results" style="margin-top:6px"></div>
+      <div class="tip" id="annotTip" style="display:none"></div>
+      <div class="legend" id="legend" style="display:none">
+        <span class="lg-coral">g&#8321; (spot 1)</span><span class="lg-cyan">g&#8322; (spot 2)</span>
+        <span class="lg-gold">predicted allowed spot</span><span class="lg-hollow">forbidden position (superlattice would appear here)</span>
+      </div>
+      <div class="tip" id="overlayTip" style="display:none">Overlay check: every <b>bright</b> spot should sit on a gold marker, with none predicted where the pattern is empty. If the predicted net is finer/coarser than reality, you clicked non-adjacent spots &mdash; re-pick.</div>
+    </div>
+
+    <div class="card">
+      <h2>5 &middot; Label style</h2>
+      <div class="grid2">
+        <div class="field"><label>Font</label>
+          <select id="styFont">
+            <option>Arial</option><option>Helvetica</option><option>Verdana</option>
+            <option>Times New Roman</option><option>Georgia</option><option>Courier New</option>
+          </select>
+        </div>
+        <div class="field"><label>Size (%) <span id="stySizeVal">100</span></label>
+          <input type="range" id="stySize" min="40" max="250" value="100">
+        </div>
+        <div class="field"><label>Font color</label><input type="color" id="styColor" value="#ffe9b0"></div>
+        <div class="field"><label>Outline color</label><input type="color" id="styOutlineColor" value="#000000"></div>
+        <div class="field"><label>Marker shape</label>
+          <select id="styMarker">
+            <option value="dot">Dot (filled)</option><option value="circle">Circle</option>
+            <option value="cross">Cross</option><option value="square">Square</option>
+            <option value="none">None</option>
+          </select>
+        </div>
+        <div class="field"><label>Marker color</label><input type="color" id="styMarkerColor" value="#ffc845"></div>
+      </div>
+      <div class="rowbtns" style="margin-top:8px">
+        <label class="chk" style="color:var(--mut);font-size:11.5px"><input type="checkbox" id="styBold" checked> bold</label>
+        <label class="chk" style="color:var(--mut);font-size:11.5px"><input type="checkbox" id="styOutline" checked> text outline</label>
+        <label class="chk" style="color:var(--mut);font-size:11.5px"><input type="checkbox" id="styStamp" checked> zone-axis stamp</label>
+      </div>
+
+      <h2 style="margin-top:14px">Templates</h2>
+      <div class="grid2">
+        <div class="field"><label>Saved templates</label><select id="tplSelect"><option value="">&mdash; choose &mdash;</option></select></div>
+        <div class="field"><label>New template name</label><input type="text" id="tplName" placeholder="e.g. Acta figures"></div>
+      </div>
+      <div class="rowbtns" style="margin-top:8px">
+        <button id="btnTplSave" class="small">Save current style</button>
+        <button id="btnTplDel" class="small">Delete</button>
+        <button id="btnTplExport" class="small">Download .json</button>
+        <button id="btnTplImport" class="small">Load .json</button>
+        <input type="file" id="tplFile" accept=".json,application/json" style="display:none">
+      </div>
+      <div class="tip">The active style applies to <b>every</b> image you annotate in this session (screen + PNG export). Download your templates as a .json to reuse or share them; load the file in a future session to get them back.</div>
+    </div>
+  </div>
+</main>
+
+<script>
+"use strict";
+/* ================= state ================= */
+const S = {
+  img: null, iw: 0, ih: 0,
+  scale: 1, ox: 0, oy: 0,          // view transform: screen = (world - o) * scale
+  center: null, spots: [],          // world (image px) coords
+  results: [], selected: -1,
+  mode: "auto",                     // "auto": first click center, then spots; "center": next click re-picks center
+  imgData: null,
+  approved: false, hover: null,     // hover: {w:{x,y}, hkl:[h,k,l]}
+  style: { font: "Arial", sizePct: 100, color: "#ffe9b0", outlineColor: "#000000", marker: "dot", markerColor: "#ffc845", bold: true, outline: true, stamp: true },
+};
+const TEMPLATES = {
+  "Presentation (gold)": { font: "Arial", sizePct: 130, color: "#ffe9b0", outlineColor: "#000000", marker: "dot", markerColor: "#ffc845", bold: true, outline: true, stamp: true },
+  "Publication (white, minimal)": { font: "Arial", sizePct: 90, color: "#ffffff", outlineColor: "#000000", marker: "none", markerColor: "#ffffff", bold: true, outline: true, stamp: false },
+};
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const stage = document.getElementById("stage");
+const hint = document.getElementById("hintbar");
+const COLORS = ["#ff6b4a", "#4ad9ff", "#5fd35f", "#b08fe8", "#ffc845", "#ff9ad5"];
+
+/* ================= presets ================= */
+const PRESETS = {
+  Al:  { s: "FCC", a: 4.050, c: 4.050 }, Ni: { s: "FCC", a: 3.524, c: 3.524 },
+  Cu:  { s: "FCC", a: 3.615, c: 3.615 }, Au: { s: "FCC", a: 4.078, c: 4.078 },
+  aFe: { s: "BCC", a: 2.866, c: 2.866 }, W:  { s: "BCC", a: 3.165, c: 3.165 },
+  Si:  { s: "DIA", a: 5.431, c: 5.431 },
+  Mg:  { s: "HCP", a: 3.209, c: 5.211 }, aTi: { s: "HCP", a: 2.951, c: 4.683 },
+};
+document.getElementById("preset").addEventListener("change", e => {
+  const p = PRESETS[e.target.value];
+  if (!p) return;
+  document.getElementById("structure").value = p.s;
+  setVal("pa", p.a); setVal("pb", p.a); setVal("pc", p.c);
+  setVal("pal", 90); setVal("pbe", 90); setVal("pga", p.s === "HCP" ? 120 : 90);
+});
+document.getElementById("structure").addEventListener("change", e => {
+  document.getElementById("preset").value = "custom";
+  if (e.target.value === "HCP") setVal("pga", 120);
+});
+function setVal(id, v) { document.getElementById(id).value = v; }
+function num(id) { return parseFloat(document.getElementById(id).value); }
+
+/* ================= crystallography ================= */
+function metricInv() { // reciprocal metric tensor G* = inv(G), lattice params in Angstrom
+  const a = num("pa"), b = num("pb"), c = num("pc");
+  const al = num("pal") * Math.PI / 180, be = num("pbe") * Math.PI / 180, ga = num("pga") * Math.PI / 180;
+  const G = [
+    [a * a, a * b * Math.cos(ga), a * c * Math.cos(be)],
+    [a * b * Math.cos(ga), b * b, b * c * Math.cos(al)],
+    [a * c * Math.cos(be), b * c * Math.cos(al), c * c],
+  ];
+  return inv3(G);
+}
+function inv3(m) {
+  const [a, b, c] = m[0], [d, e, f] = m[1], [g, h, i] = m[2];
+  const A = e * i - f * h, B = c * h - b * i, C = b * f - c * e;
+  const D = f * g - d * i, E = a * i - c * g, F = c * d - a * f;
+  const G = d * h - e * g, H = b * g - a * h, I = a * e - b * d;
+  const det = a * A + b * D + c * G;
+  return [[A / det, B / det, C / det], [D / det, E / det, F / det], [G / det, H / det, I / det]];
+}
+function quad(Gi, u, v) { // u^T Gi v
+  let s = 0;
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) s += u[i] * Gi[i][j] * v[j];
+  return s;
+}
+function allowed(h, k, l, st) {
+  if (h === 0 && k === 0 && l === 0) return false;
+  switch (st) {
+    case "SC": return true;
+    case "BCC": return (h + k + l) % 2 === 0;
+    case "FCC": { const p = [h & 1, k & 1, l & 1].map(Math.abs); return (p[0] === p[1] && p[1] === p[2]); }
+    case "DIA": {
+      const p = [Math.abs(h % 2), Math.abs(k % 2), Math.abs(l % 2)];
+      if (!(p[0] === p[1] && p[1] === p[2])) return false;
+      if (p[0] === 1) return true;                       // all odd
+      return ((h + k + l) % 4 + 4) % 4 === 0;            // all even: h+k+l = 4n
+    }
+    case "HCP": {
+      const m3 = ((h + 2 * k) % 3 + 3) % 3;
+      if (m3 === 0 && Math.abs(l % 2) === 1) return false;
+      return true;
+    }
+  }
+  return true;
+}
+function gcd2(x, y) { x = Math.abs(x); y = Math.abs(y); while (y) { [x, y] = [y, x % y]; } return x; }
+function reduce3(v) {
+  let g = gcd2(gcd2(v[0], v[1]), v[2]);
+  if (g === 0) return v;
+  let r = v.map(x => x / g);
+  for (const x of r) { if (x !== 0) { if (x < 0) r = r.map(y => -y); break; } }
+  return r;
+}
+function cross(u, v) {
+  return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+}
+function famKey(v) { return v.map(Math.abs).sort((a, b) => b - a).join(","); }
+function hklHtml(v) {
+  return "(" + v.map(x => x < 0 ? `<span class="ov">${-x}</span>` : `${x}`).join("&hairsp;") + ")";
+}
+function zoneHtml(v) {
+  return "[" + v.map(x => x < 0 ? `<span class="ov">${-x}</span>` : `${x}`).join("&hairsp;") + "]";
+}
+function hklCanvas(v) { // canvas label with U+0305 overlines
+  return v.map(x => x < 0 ? String(-x) + "̅" : String(x)).join("");
+}
+
+/* ================= analysis ================= */
+function analyze() {
+  const warns = [];
+  if (!S.img) return fail("Load an image first.");
+  if (!S.center || S.spots.length < 2) return fail("Need 000 plus at least two spots.");
+  const Gi = metricInv(), st = document.getElementById("structure").value;
+  const maxI = Math.round(num("maxIdx")), tolR = num("tolR") / 100, tolA = num("tolA");
+  const v1 = sub(S.spots[0], S.center), v2 = sub(S.spots[1], S.center);
+  const R1 = Math.hypot(v1.x, v1.y), R2 = Math.hypot(v2.x, v2.y);
+  const phi = Math.acos(Math.min(1, Math.max(-1, (v1.x * v2.x + v1.y * v2.y) / (R1 * R2)))) * 180 / Math.PI;
+  const ratio = R2 / R1;
+  if (phi < 5 || phi > 175) return fail("Spots 1 and 2 are nearly collinear — pick a non-collinear second spot.");
+
+  // extra-spot integerness against the pixel basis
+  const det = v1.x * v2.y - v1.y * v2.x;
+  const extras = [];
+  for (let i = 2; i < S.spots.length; i++) {
+    const w = sub(S.spots[i], S.center);
+    const m = (w.x * v2.y - w.y * v2.x) / det, n = (v1.x * w.y - v1.y * w.x) / det;
+    const ok = Math.abs(m - Math.round(m)) < 0.18 && Math.abs(n - Math.round(n)) < 0.18;
+    extras.push({ i, m: Math.round(m), n: Math.round(n), ok });
+    if (!ok) warns.push(`Spot ${i + 1} is not an integer combination of spots 1 &amp; 2 (m=${m.toFixed(2)}, n=${n.toFixed(2)}) — it may be a precipitate/superlattice spot, or spots 1–2 aren’t the shortest basis.`);
+  }
+
+  // enumerate allowed reflections
+  const refl = [];
+  for (let h = -maxI; h <= maxI; h++) for (let k = -maxI; k <= maxI; k++) for (let l = -maxI; l <= maxI; l++) {
+    if (!allowed(h, k, l, st)) continue;
+    const v = [h, k, l];
+    refl.push({ v, len: Math.sqrt(quad(Gi, v, v)) });
+  }
+  // candidate pairs
+  const minLen = Math.min(...refl.map(r => r.len));
+  const best = new Map();
+  for (const A of refl) for (const B of refl) {
+    const r = B.len / A.len;
+    const dr = Math.abs(r - ratio) / ratio;
+    if (dr > tolR) continue;
+    const ca = quad(Gi, A.v, B.v) / (A.len * B.len);
+    const ang = Math.acos(Math.min(1, Math.max(-1, ca))) * 180 / Math.PI;
+    const da = Math.abs(ang - phi);
+    if (da > tolA) continue;
+    const z = cross(A.v, B.v);
+    if (z[0] === 0 && z[1] === 0 && z[2] === 0) continue;
+    const zr = reduce3(z);
+    // extra-spot extinction consistency
+    let pen = 0;
+    for (const ex of extras) {
+      if (!ex.ok) continue;
+      const hh = [0, 1, 2].map(j => ex.m * A.v[j] + ex.n * B.v[j]);
+      if (!allowed(hh[0], hh[1], hh[2], st)) pen += 2;
+    }
+    // low-index tiebreak: among equally good geometric fits, prefer the shortest-g assignment
+    const score = Math.sqrt((dr / tolR) ** 2 + (da / tolA) ** 2) + pen + 0.02 * ((A.len + B.len) / (2 * minLen) - 1);
+    const key = famKey(A.v) + "|" + famKey(B.v) + "|" + famKey(zr);
+    const cur = best.get(key);
+    if (!cur || score < cur.score) best.set(key, { A: A.v, B: B.v, lenA: A.len, lenB: B.len, zone: zr, score, dr, da, ang, r, pen });
+  }
+  S.results = [...best.values()].sort((a, b) => a.score - b.score).slice(0, 8);
+  S.selected = S.results.length ? 0 : -1;
+  S.approved = false; S.hover = null;
+  document.getElementById("btnExport").disabled = true;
+  renderMeasurements({ R1, R2, ratio, phi });
+  renderResults(warns);
+  draw();
+  function fail(msg) { document.getElementById("warns").innerHTML = `<div class="warn">${msg}</div>`; return; }
+}
+function sub(p, q) { return { x: p.x - q.x, y: p.y - q.y }; }
+
+function renderMeasurements(m) {
+  const cc = num("camConst");
+  let d = "";
+  if (cc > 0) {
+    d = ` &nbsp;|&nbsp; d&#8321; = <b>${(cc / m.R1).toFixed(3)} &Aring;</b>, d&#8322; = <b>${(cc / m.R2).toFixed(3)} &Aring;</b>`;
+  }
+  document.getElementById("meas").innerHTML =
+    `R&#8321; = <b>${m.R1.toFixed(1)} px</b>, R&#8322; = <b>${m.R2.toFixed(1)} px</b> &nbsp;|&nbsp; ` +
+    `R&#8322;/R&#8321; = <b>${m.ratio.toFixed(3)}</b> &nbsp;|&nbsp; &phi; = <b>${m.phi.toFixed(2)}&deg;</b>${d}`;
+}
+function renderResults(warns) {
+  const cc = num("camConst");
+  const el = document.getElementById("results");
+  document.getElementById("warns").innerHTML = warns.map(w => `<div class="warn">&#9888; ${w}</div>`).join("");
+  if (!S.results.length) {
+    el.innerHTML = `<div class="warn">No match within tolerance. Try: increase max index or tolerances; check the crystal structure; make sure you clicked the two <b>shortest</b> matrix spots.</div>`;
+    document.getElementById("legend").style.display = "none";
+    document.getElementById("overlayTip").style.display = "none";
+    return;
+  }
+  let rows = S.results.map((r, i) => {
+    let dinfo = "";
+    if (cc > 0) {
+      const dm1 = cc / Math.hypot(S.spots[0].x - S.center.x, S.spots[0].y - S.center.y);
+      const e1 = 100 * (dm1 - 1 / r.lenA) / (1 / r.lenA);
+      dinfo = `<div class="err">d&#8321; calc ${(1 / r.lenA).toFixed(3)} &Aring; (meas ${e1 >= 0 ? "+" : ""}${e1.toFixed(1)}%)</div>`;
+    }
+    return `<tr class="res ${i === S.selected ? "selected" : ""}" data-i="${i}">
+      <td class="zone">${zoneHtml(r.zone)}</td>
+      <td>g&#8321;=${hklHtml(r.A)}<br>g&#8322;=${hklHtml(r.B)}</td>
+      <td><div class="err">&Delta;ratio ${(100 * r.dr).toFixed(1)}%</div><div class="err">&Delta;&phi; ${r.da.toFixed(2)}&deg;</div>${r.pen ? '<div class="err" style="color:var(--coral)">extinction clash</div>' : ""}${dinfo}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<table><tr><th>Zone axis</th><th>Assignment</th><th>Fit</th></tr>${rows}</table>
+    <div class="rowbtns" style="margin-top:9px">
+      <button id="btnApprove" class="${S.approved ? "" : "primary"}" style="width:100%">${S.approved ? "&#8634; Un-approve (back to preview)" : "&#10003; Approve &mdash; write indices on the image"}</button>
+    </div>
+    <div class="tip">Click a row to overlay its predicted net on the image. Zone axes are listed as families — ${zoneHtml(S.results[0].zone)} means the beam is along a &#9001;${S.results[0].zone.map(Math.abs).sort((a,b)=>b-a).join("")}&#9002;-type direction.</div>`;
+  el.querySelectorAll("tr.res").forEach(tr => tr.addEventListener("click", () => {
+    S.selected = +tr.dataset.i; S.approved = false; document.getElementById("btnExport").disabled = true;
+    renderResults(warns); draw();
+  }));
+  el.querySelector("#btnApprove").addEventListener("click", () => {
+    S.approved = !S.approved;
+    document.getElementById("btnExport").disabled = !S.approved;
+    if (S.approved) hint.innerHTML = `Indices written for zone axis <b>${zoneHtml(S.results[S.selected].zone)}</b>. Hover any spot for its <b>g vector</b>; use <b>Export labeled PNG</b> to save the annotated pattern.`;
+    renderResults(warns); draw();
+  });
+  document.getElementById("legend").style.display = "flex";
+  document.getElementById("overlayTip").style.display = "block";
+  hint.innerHTML = `Best match: zone axis <b>${zoneHtml(S.results[0].zone)}</b> with g&#8321;=${hklHtml(S.results[0].A)}, g&#8322;=${hklHtml(S.results[0].B)}. Verify with the overlay, then confirm on a second zone axis at the microscope.`;
+}
+
+/* ================= canvas ================= */
+function resize() {
+  const r = stage.getBoundingClientRect();
+  cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+  draw();
+}
+window.addEventListener("resize", resize);
+
+function worldToScreen(p) { return { x: (p.x - S.ox) * S.scale, y: (p.y - S.oy) * S.scale }; }
+function screenToWorld(p) { return { x: p.x / S.scale + S.ox, y: p.y / S.scale + S.oy }; }
+
+function fitView() {
+  if (!S.img) return;
+  const r = stage.getBoundingClientRect();
+  S.scale = Math.min(r.width / S.iw, r.height / S.ih) * 0.96;
+  S.ox = S.iw / 2 - r.width / (2 * S.scale);
+  S.oy = S.ih / 2 - r.height / (2 * S.scale);
+  draw();
+}
+
+function draw() {
+  const dpr = devicePixelRatio;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!S.img) return;
+  ctx.imageSmoothingEnabled = S.scale < 3;
+  const tl = worldToScreen({ x: 0, y: 0 });
+  ctx.drawImage(S.img, tl.x, tl.y, S.iw * S.scale, S.ih * S.scale);
+
+  // overlay predicted net
+  const net = currentNet();
+  if (net) {
+    if (!S.approved) {
+      for (const q of net) {
+        const p = worldToScreen(q.w);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, q.ok ? 9 : 5, 0, 7);
+        ctx.strokeStyle = q.ok ? "#ffc845" : "rgba(150,150,160,0.45)";
+        ctx.lineWidth = q.ok ? 2 : 1;
+        ctx.stroke();
+        if (q.ok && Math.abs(q.m) <= 2 && Math.abs(q.n) <= 2) {
+          ctx.font = "bold 12px Arial";
+          ctx.fillStyle = "rgba(255,200,69,0.95)";
+          ctx.textAlign = "center";
+          ctx.fillText(hklCanvas(q.hkl), p.x, p.y - 13);
+        }
+      }
+    } else {
+      // approved: clean labels on every allowed spot in view, in the active style
+      const sty = S.style, k = sty.sizePct / 100, fs = 13 * k;
+      for (const q of net) {
+        if (!q.ok) continue;
+        if (q.w.x < 0 || q.w.y < 0 || q.w.x > S.iw || q.w.y > S.ih) continue;
+        const p = worldToScreen(q.w);
+        drawMarkerShape(ctx, p.x, p.y, 4 * k, sty.marker, sty.markerColor, 1.6 * k);
+        const t = hklCanvas(q.hkl);
+        ctx.font = `${sty.bold ? "bold " : ""}${fs}px ${sty.font}`;
+        ctx.textAlign = "center"; ctx.lineJoin = "round";
+        if (sty.outline) { ctx.lineWidth = fs * 0.24; ctx.strokeStyle = sty.outlineColor; ctx.strokeText(t, p.x, p.y + fs * 1.55); }
+        ctx.fillStyle = sty.color;
+        ctx.fillText(t, p.x, p.y + fs * 1.55);
+      }
+      if (sty.stamp && S.results[S.selected]) {
+        const stampT = "B = [" + S.results[S.selected].zone.map(x => (x < 0 ? String(-x) + "̅" : String(x))).join("") + "]";
+        ctx.font = `${sty.bold ? "bold " : ""}${fs * 1.3}px ${sty.font}`; ctx.textAlign = "left";
+        if (sty.outline) { ctx.lineWidth = fs * 0.3; ctx.strokeStyle = sty.outlineColor; ctx.strokeText(stampT, 14, 26 + fs * 0.5); }
+        ctx.fillStyle = sty.color; ctx.fillText(stampT, 14, 26 + fs * 0.5);
+      }
+    }
+  }
+  // basis vectors (hidden in approved mode for a clean figure)
+  if (!S.approved) {
+    if (S.center && S.spots.length >= 1) drawVec(S.center, S.spots[0], "#ff6b4a");
+    if (S.center && S.spots.length >= 2) drawVec(S.center, S.spots[1], "#4ad9ff");
+  }
+  // hover g vector
+  if (S.hover && S.center && document.getElementById("chkG").checked) {
+    const p0 = worldToScreen(S.center), p1 = worldToScreen(S.hover.w);
+    drawArrow(ctx, p0, p1, "#5fd35f", 2.5, 10);
+    const Gi = metricInv();
+    const glen = Math.sqrt(quad(Gi, S.hover.hkl, S.hover.hkl));
+    const Rpx = Math.hypot(S.hover.w.x - S.center.x, S.hover.w.y - S.center.y);
+    const cc = num("camConst");
+    let lines = [`g = ${hklCanvas(S.hover.hkl)}`, `|g| = ${glen.toFixed(4)} Å⁻¹   d = ${(1 / glen).toFixed(3)} Å`];
+    if (cc > 0) lines.push(`d(meas) = ${(cc / Rpx).toFixed(3)} Å`);
+    const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+    ctx.font = "bold 12.5px Arial"; ctx.textAlign = "left";
+    const wbox = Math.max(...lines.map(t => ctx.measureText(t).width)) + 16;
+    ctx.fillStyle = "rgba(8,10,18,0.88)";
+    ctx.fillRect(mx + 12, my - 14, wbox, lines.length * 17 + 10);
+    ctx.strokeStyle = "#5fd35f"; ctx.lineWidth = 1; ctx.strokeRect(mx + 12, my - 14, wbox, lines.length * 17 + 10);
+    ctx.fillStyle = "#c9f5c9";
+    lines.forEach((t, i) => ctx.fillText(t, mx + 20, my + 3 + i * 17));
+  }
+  // points
+  if (S.center) drawMarker(S.center, "#ffc845", "000", true);
+  if (!S.approved) S.spots.forEach((s, i) => drawMarker(s, COLORS[i % COLORS.length], String(i + 1), false));
+}
+function currentNet() { // predicted net positions for the selected result
+  if (!(S.selected >= 0 && S.results[S.selected] && S.center && S.spots.length >= 2)) return null;
+  const R = S.results[S.selected], st = document.getElementById("structure").value;
+  const v1 = sub(S.spots[0], S.center), v2 = sub(S.spots[1], S.center);
+  const out = [];
+  for (let m = -8; m <= 8; m++) for (let n = -8; n <= 8; n++) {
+    if (m === 0 && n === 0) continue;
+    const w = { x: S.center.x + m * v1.x + n * v2.x, y: S.center.y + m * v1.y + n * v2.y };
+    if (w.x < -20 || w.y < -20 || w.x > S.iw + 20 || w.y > S.ih + 20) continue;
+    const hkl = [0, 1, 2].map(j => m * R.A[j] + n * R.B[j]);
+    out.push({ w, m, n, hkl, ok: allowed(hkl[0], hkl[1], hkl[2], st) });
+  }
+  return out;
+}
+function drawMarkerShape(g, x, y, r, shape, col, lw) {
+  if (shape === "none") return;
+  g.beginPath();
+  g.strokeStyle = col; g.fillStyle = col; g.lineWidth = lw;
+  switch (shape) {
+    case "dot": g.arc(x, y, r, 0, 7); g.fill(); break;
+    case "circle": g.arc(x, y, r * 1.6, 0, 7); g.stroke(); break;
+    case "cross":
+      g.moveTo(x - r * 1.6, y); g.lineTo(x + r * 1.6, y);
+      g.moveTo(x, y - r * 1.6); g.lineTo(x, y + r * 1.6);
+      g.stroke(); break;
+    case "square": g.strokeRect(x - r * 1.3, y - r * 1.3, r * 2.6, r * 2.6); break;
+  }
+}
+function drawArrow(g, p0, p1, col, lw, head) {
+  const dx = p1.x - p0.x, dy = p1.y - p0.y, L = Math.hypot(dx, dy);
+  if (L < 1) return;
+  const ux = dx / L, uy = dy / L;
+  g.beginPath(); g.moveTo(p0.x, p0.y); g.lineTo(p1.x - ux * head * 0.6, p1.y - uy * head * 0.6);
+  g.strokeStyle = col; g.lineWidth = lw; g.stroke();
+  g.beginPath();
+  g.moveTo(p1.x, p1.y);
+  g.lineTo(p1.x - ux * head - uy * head * 0.45, p1.y - uy * head + ux * head * 0.45);
+  g.lineTo(p1.x - ux * head + uy * head * 0.45, p1.y - uy * head - ux * head * 0.45);
+  g.closePath(); g.fillStyle = col; g.fill();
+}
+function drawVec(a, b, col) {
+  const p = worldToScreen(a), q = worldToScreen(b);
+  ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y);
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+}
+function drawMarker(w, col, label, isCenter) {
+  const p = worldToScreen(w);
+  ctx.beginPath();
+  if (isCenter) {
+    ctx.moveTo(p.x - 11, p.y); ctx.lineTo(p.x + 11, p.y);
+    ctx.moveTo(p.x, p.y - 11); ctx.lineTo(p.x, p.y + 11);
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+    ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, 7); ctx.stroke();
+  } else {
+    ctx.arc(p.x, p.y, 7, 0, 7);
+    ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+  ctx.font = "bold 12px Arial"; ctx.fillStyle = col; ctx.textAlign = "left";
+  ctx.fillText(label, p.x + 10, p.y - 8);
+}
+
+/* ================= interactions ================= */
+let dragging = false, moved = false, last = null;
+cv.addEventListener("mousedown", e => { dragging = true; moved = false; last = { x: e.offsetX, y: e.offsetY }; });
+cv.addEventListener("mousemove", e => {
+  if (dragging) {
+    const dx = e.offsetX - last.x, dy = e.offsetY - last.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    if (moved) { S.ox -= dx / S.scale; S.oy -= dy / S.scale; last = { x: e.offsetX, y: e.offsetY }; draw(); }
+    return;
+  }
+  // hover hit-test against the predicted net → g vector readout
+  if (!document.getElementById("chkG").checked) { if (S.hover) { S.hover = null; draw(); } return; }
+  const net = currentNet();
+  let hit = null;
+  if (net) {
+    let bestD = 14;
+    for (const q of net) {
+      if (!q.ok) continue;
+      const p = worldToScreen(q.w);
+      const d = Math.hypot(p.x - e.offsetX, p.y - e.offsetY);
+      if (d < bestD) { bestD = d; hit = { w: q.w, hkl: q.hkl }; }
+    }
+  }
+  const changed = (!!hit !== !!S.hover) || (hit && S.hover && (hit.hkl.join() !== S.hover.hkl.join()));
+  if (changed) { S.hover = hit; draw(); }
+});
+cv.addEventListener("mouseleave", () => { if (S.hover) { S.hover = null; draw(); } });
+window.addEventListener("mouseup", e => {
+  if (dragging && !moved && e.target === cv) addPoint({ x: e.offsetX, y: e.offsetY });
+  dragging = false;
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  if (!S.img) return;
+  const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const w = screenToWorld({ x: e.offsetX, y: e.offsetY });
+  S.scale *= f;
+  S.ox = w.x - e.offsetX / S.scale; S.oy = w.y - e.offsetY / S.scale;
+  draw();
+}, { passive: false });
+
+function addPoint(sp) {
+  if (!S.img) return;
+  let w = screenToWorld(sp);
+  if (document.getElementById("chkSnap").checked) w = snapCentroid(w);
+  if (S.mode === "center" || !S.center) {
+    S.center = w; S.mode = "auto";
+    hint.innerHTML = "Center set. Now click the <b>shortest</b> bright spot (g&#8321;), then the next shortest non-collinear one (g&#8322;).";
+  } else {
+    S.spots.push(w);
+    if (S.spots.length === 1) hint.innerHTML = "g&#8321; set. Click the <b>second shortest, non-collinear</b> spot (g&#8322;).";
+    else if (S.spots.length === 2) hint.innerHTML = "Basis complete — press <b>Identify zone axis</b>. Optionally click more matrix spots as consistency checks.";
+  }
+  renderPoints(); draw();
+}
+function snapCentroid(w) {
+  if (!S.imgData) return w;
+  const r = 9, dark = document.getElementById("chkDark").checked;
+  const x0 = Math.round(w.x), y0 = Math.round(w.y);
+  let sw = 0, sx = 0, sy = 0, lo = 255, hi = 0;
+  const vals = [];
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    const x = x0 + dx, y = y0 + dy;
+    if (x < 0 || y < 0 || x >= S.iw || y >= S.ih || dx * dx + dy * dy > r * r) continue;
+    const idx = (y * S.iw + x) * 4;
+    const d = S.imgData.data;
+    let v = 0.299 * d[idx] + 0.587 * d[idx + 1] + 0.114 * d[idx + 2];
+    if (dark) v = 255 - v;
+    vals.push([x, y, v]);
+    if (v < lo) lo = v; if (v > hi) hi = v;
+  }
+  if (hi - lo < 8) return w; // flat region, keep click
+  for (const [x, y, v] of vals) {
+    const wgt = Math.max(0, (v - lo) / (hi - lo)) ** 2;
+    sw += wgt; sx += wgt * x; sy += wgt * y;
+  }
+  if (sw === 0) return w;
+  return { x: sx / sw, y: sy / sw };
+}
+function renderPoints() {
+  const el = document.getElementById("ptList");
+  let html = "";
+  if (S.center) html += `<div class="pt"><span class="dot" style="background:#ffc845"></span>000 center &nbsp;<span class="err">(${S.center.x.toFixed(1)}, ${S.center.y.toFixed(1)})</span></div>`;
+  S.spots.forEach((s, i) => {
+    html += `<div class="pt"><span class="dot" style="background:${COLORS[i % COLORS.length]}"></span>spot ${i + 1}${i === 0 ? " (g&#8321;)" : i === 1 ? " (g&#8322;)" : ""} &nbsp;<span class="err">(${s.x.toFixed(1)}, ${s.y.toFixed(1)})</span><span class="del" data-i="${i}">&times;</span></div>`;
+  });
+  el.innerHTML = html || `<div class="tip">No points yet.</div>`;
+  el.querySelectorAll(".del").forEach(d => d.addEventListener("click", () => {
+    S.spots.splice(+d.dataset.i, 1); S.results = []; S.selected = -1;
+    renderPoints(); document.getElementById("results").innerHTML = ""; draw();
+  }));
+}
+
+/* ================= toolbar ================= */
+document.getElementById("btnUpload").addEventListener("click", () => document.getElementById("fileInput").click());
+document.getElementById("fileInput").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => loadImage(rd.result);   // data URL: never taints the canvas, works from file://
+  rd.readAsDataURL(f);
+});
+stage.addEventListener("dragover", e => e.preventDefault());
+stage.addEventListener("drop", e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith("image/")) {
+    const rd = new FileReader();
+    rd.onload = () => loadImage(rd.result);
+    rd.readAsDataURL(f);
+  }
+});
+document.getElementById("btnFit").addEventListener("click", fitView);
+document.getElementById("btnCenter").addEventListener("click", () => { S.mode = "center"; hint.innerHTML = "Click the transmitted beam <b>000</b>."; });
+document.getElementById("btnUndo").addEventListener("click", () => { S.spots.pop(); S.results = []; S.selected = -1; renderPoints(); document.getElementById("results").innerHTML = ""; draw(); });
+document.getElementById("btnExport").addEventListener("click", exportLabeled);
+document.getElementById("chkG").addEventListener("change", () => { S.hover = null; draw(); });
+function exportLabeled() {
+  if (!S.approved || !S.img || S.selected < 0) return;
+  const R = S.results[S.selected];
+  const oc = document.createElement("canvas");
+  oc.width = S.iw; oc.height = S.ih;
+  const g = oc.getContext("2d");
+  g.drawImage(S.img, 0, 0);
+  const v1 = sub(S.spots[0], S.center), v2 = sub(S.spots[1], S.center);
+  const base = Math.min(Math.hypot(v1.x, v1.y), Math.hypot(v2.x, v2.y));
+  const sty = S.style;
+  const fs = Math.min(120, Math.max(9, 0.26 * base * sty.sizePct / 100));
+  const fw = sty.bold ? "bold " : "";
+  const net = currentNet() || [];
+  g.textAlign = "center"; g.lineJoin = "round";
+  for (const q of net) {
+    if (!q.ok) continue;
+    if (q.w.x < 0 || q.w.y < 0 || q.w.x > S.iw || q.w.y > S.ih) continue;
+    const t = hklCanvas(q.hkl);
+    drawMarkerShape(g, q.w.x, q.w.y, Math.max(2.5, fs * 0.12), sty.marker, sty.markerColor, Math.max(1.5, fs * 0.07));
+    g.font = `${fw}${fs}px ${sty.font}`;
+    if (sty.outline) { g.lineWidth = Math.max(2.5, fs * 0.22); g.strokeStyle = sty.outlineColor; g.strokeText(t, q.w.x, q.w.y + fs * 1.35); }
+    g.fillStyle = sty.color; g.fillText(t, q.w.x, q.w.y + fs * 1.35);
+  }
+  // 000 + g vectors
+  g.font = `${fw}${fs}px ${sty.font}`;
+  if (sty.outline) { g.lineWidth = Math.max(2.5, fs * 0.22); g.strokeStyle = sty.outlineColor; g.strokeText("000", S.center.x, S.center.y + fs * 1.35); }
+  g.fillStyle = sty.color; g.fillText("000", S.center.x, S.center.y + fs * 1.35);
+  if (document.getElementById("chkG").checked) {
+    drawArrow(g, S.center, S.spots[0], "#ff6b4a", Math.max(2.5, fs * 0.14), fs * 0.65);
+    drawArrow(g, S.center, S.spots[1], "#4ad9ff", Math.max(2.5, fs * 0.14), fs * 0.65);
+    g.font = `${fw}${fs * 0.85}px ${sty.font}`;
+    const mid1 = { x: S.center.x + v1.x * 0.55, y: S.center.y + v1.y * 0.55 };
+    const mid2 = { x: S.center.x + v2.x * 0.55, y: S.center.y + v2.y * 0.55 };
+    g.fillStyle = "#ff6b4a"; g.fillText("g₁", mid1.x, mid1.y - fs * 0.4);
+    g.fillStyle = "#4ad9ff"; g.fillText("g₂", mid2.x, mid2.y - fs * 0.4);
+  }
+  // zone-axis stamp, top-left
+  if (sty.stamp) {
+    const stamp = "B = [" + R.zone.map(x => (x < 0 ? String(-x) + "̅" : String(x))).join("") + "]";
+    g.font = `${fw}${fs * 1.15}px ${sty.font}`; g.textAlign = "left";
+    if (sty.outline) { g.lineWidth = Math.max(3, fs * 0.26); g.strokeStyle = sty.outlineColor; g.strokeText(stamp, fs * 0.8, fs * 1.6); }
+    g.fillStyle = sty.color; g.fillText(stamp, fs * 0.8, fs * 1.6);
+  }
+  const a = document.createElement("a");
+  a.download = "indexed_pattern.png";
+  a.href = oc.toDataURL("image/png");
+  a.click();
+}
+document.getElementById("btnClear").addEventListener("click", () => {
+  S.center = null; S.spots = []; S.results = []; S.selected = -1; S.mode = "auto";
+  S.approved = false; S.hover = null; document.getElementById("btnExport").disabled = true;
+  renderPoints(); document.getElementById("results").innerHTML = ""; document.getElementById("meas").innerHTML = ""; document.getElementById("warns").innerHTML = "";
+  document.getElementById("legend").style.display = "none"; document.getElementById("overlayTip").style.display = "none";
+  hint.innerHTML = "Cleared. Click the transmitted beam <b>000</b>."; draw();
+});
+document.getElementById("btnGo").addEventListener("click", analyze);
+
+function loadImage(url) {
+  const img = new Image();
+  img.onload = () => {
+    S.img = img; S.iw = img.naturalWidth; S.ih = img.naturalHeight;
+    S.center = null; S.spots = []; S.results = []; S.selected = -1;
+    S.approved = false; S.hover = null; document.getElementById("btnExport").disabled = true;
+    const oc = document.createElement("canvas");
+    oc.width = S.iw; oc.height = S.ih;
+    const octx = oc.getContext("2d", { willReadFrequently: true });
+    octx.drawImage(img, 0, 0);
+    try { S.imgData = octx.getImageData(0, 0, S.iw, S.ih); } catch (_) { S.imgData = null; }
+    renderPoints(); fitView();
+    hint.innerHTML = "Image loaded. Click the transmitted beam <b>000</b> (zoom in for precision).";
+  };
+  img.src = url;
+}
+
+/* ================= demo pattern ================= */
+document.getElementById("btnDemo").addEventListener("click", () => {
+  const W = 900, Hh = 900, oc = document.createElement("canvas");
+  oc.width = W; oc.height = Hh;
+  const c = oc.getContext("2d");
+  c.fillStyle = "#050508"; c.fillRect(0, 0, W, Hh);
+  // noise
+  const nd = c.getImageData(0, 0, W, Hh);
+  for (let i = 0; i < nd.data.length; i += 4) {
+    const v = Math.random() * 14;
+    nd.data[i] += v; nd.data[i + 1] += v; nd.data[i + 2] += v;
+  }
+  c.putImageData(nd, 0, 0);
+  // FCC [011]: g1 = 200 (len 2/a), g2 = 1-11 (len sqrt3/a), angle 54.74
+  const cx = W / 2, cy = Hh / 2, L1 = 96;
+  const ang = 54.74 * Math.PI / 180, L2 = L1 * Math.sqrt(3) / 2;
+  const v1 = { x: L1, y: 0 }, v2 = { x: L2 * Math.cos(ang), y: -L2 * Math.sin(ang) };
+  function blob(x, y, s, amp) {
+    const g = c.createRadialGradient(x, y, 0, x, y, s);
+    g.addColorStop(0, `rgba(255,255,255,${amp})`);
+    g.addColorStop(0.45, `rgba(230,235,255,${amp * 0.5})`);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g; c.beginPath(); c.arc(x, y, s, 0, 7); c.fill();
+  }
+  for (let m = -5; m <= 5; m++) for (let n = -5; n <= 5; n++) {
+    const x = cx + m * v1.x + n * v2.x, y = cy + m * v1.y + n * v2.y;
+    if (x < 30 || y < 30 || x > W - 30 || y > Hh - 30) continue;
+    const d = Math.hypot(x - cx, y - cy);
+    const amp = m === 0 && n === 0 ? 1 : Math.max(0.25, 0.95 * Math.exp(-d / 480));
+    blob(x + (Math.random() - 0.5) * 1.2, y + (Math.random() - 0.5) * 1.2, m === 0 && n === 0 ? 15 : 10, amp);
+  }
+  loadImage(oc.toDataURL());
+  hint.innerHTML = "Demo loaded: a synthetic FCC pattern (Al default). Click <b>000</b> at the center, then the two shortest spots — you should get &#9001;011&#9002;.";
+});
+
+/* ================= label style + templates ================= */
+const STY_IDS = { font: "styFont", color: "styColor", outlineColor: "styOutlineColor", marker: "styMarker", markerColor: "styMarkerColor" };
+function readStyle() {
+  for (const [k, id] of Object.entries(STY_IDS)) S.style[k] = document.getElementById(id).value;
+  S.style.sizePct = +document.getElementById("stySize").value;
+  S.style.bold = document.getElementById("styBold").checked;
+  S.style.outline = document.getElementById("styOutline").checked;
+  S.style.stamp = document.getElementById("styStamp").checked;
+  document.getElementById("stySizeVal").textContent = S.style.sizePct;
+  if (S.approved) draw();
+}
+function writeStyleControls() {
+  for (const [k, id] of Object.entries(STY_IDS)) document.getElementById(id).value = S.style[k];
+  document.getElementById("stySize").value = S.style.sizePct;
+  document.getElementById("styBold").checked = S.style.bold;
+  document.getElementById("styOutline").checked = S.style.outline;
+  document.getElementById("styStamp").checked = S.style.stamp;
+  document.getElementById("stySizeVal").textContent = S.style.sizePct;
+}
+["styFont", "stySize", "styColor", "styOutlineColor", "styMarker", "styMarkerColor", "styBold", "styOutline", "styStamp"]
+  .forEach(id => document.getElementById(id).addEventListener("input", readStyle));
+
+
+/* standalone build: persist templates between sessions (guarded — silently inert if storage unavailable) */
+function saveTpls() { try { window.localStorage.setItem("saedLabelTemplates", JSON.stringify(TEMPLATES)); } catch (_) {} }
+function loadTpls() { try {
+  const s = window.localStorage.getItem("saedLabelTemplates");
+  if (s) { const o = JSON.parse(s);
+    for (const [k, v] of Object.entries(o)) if (v && typeof v === "object" && "color" in v) TEMPLATES[k] = v; }
+} catch (_) {} }
+function refreshTplSelect(selectName) {
+  saveTpls();
+  const sel = document.getElementById("tplSelect");
+  sel.innerHTML = `<option value="">&mdash; choose &mdash;</option>` +
+    Object.keys(TEMPLATES).map(n => `<option${n === selectName ? " selected" : ""}>${n.replace(/</g, "&lt;")}</option>`).join("");
+}
+document.getElementById("tplSelect").addEventListener("change", e => {
+  const t = TEMPLATES[e.target.value];
+  if (!t) return;
+  S.style = { ...S.style, ...t };
+  writeStyleControls();
+  if (S.approved) draw();
+});
+document.getElementById("btnTplSave").addEventListener("click", () => {
+  const name = document.getElementById("tplName").value.trim() || document.getElementById("tplSelect").value || "My template";
+  TEMPLATES[name] = { ...S.style };
+  refreshTplSelect(name);
+  document.getElementById("tplName").value = "";
+});
+document.getElementById("btnTplDel").addEventListener("click", () => {
+  const name = document.getElementById("tplSelect").value;
+  if (name && TEMPLATES[name]) { delete TEMPLATES[name]; refreshTplSelect(""); }
+});
+document.getElementById("btnTplExport").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.download = "saed_label_templates.json";
+  a.href = "data:application/json;charset=utf-8," + encodeURIComponent(JSON.stringify(TEMPLATES, null, 2));
+  a.click();
+});
+document.getElementById("btnTplImport").addEventListener("click", () => document.getElementById("tplFile").click());
+document.getElementById("tplFile").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const obj = JSON.parse(rd.result);
+      let n = 0;
+      for (const [name, t] of Object.entries(obj)) {
+        if (t && typeof t === "object" && "color" in t) { TEMPLATES[name] = { ...S.style, ...t }; n++; }
+      }
+      refreshTplSelect("");
+      hint.innerHTML = `Loaded <b>${n}</b> template(s) from ${f.name}.`;
+    } catch (_) { hint.innerHTML = `<span style="color:var(--coral)">Couldn't parse ${f.name} — is it a template .json?</span>`; }
+  };
+  rd.readAsText(f);
+  e.target.value = "";
+});
+
+/* ================= boot ================= */
+window.__test = { S, analyze, draw, exportLabeled, addWorldPoint: (x, y) => { const keep = document.getElementById("chkSnap").checked; if (!S.center) S.center = { x, y }; else S.spots.push({ x, y }); renderPoints(); draw(); } };
+resize();
+renderPoints();
+loadTpls();
+refreshTplSelect("");
+writeStyleControls();
+</script>
+</body>
+</html>
